@@ -85,6 +85,12 @@ let
     fi
   '';
 
+  yarnFunctions = import ./buildYarnPackage.nix {
+    inherit lib npmInfo runCommand fetchurl npmModules writeScriptBin nodejs
+      yarn patchShebangs writeText stdenv untarAndWrap depToFetch commonEnv
+      makeWrapper writeShellScriptBin unScope;
+  };
+
 in rec {
   mkNodeModules = { src, extraEnvVars ? { }, pname, version, buildInputs ? [] }:
     let
@@ -210,9 +216,5 @@ in rec {
         passthru = { inherit nodeModules; } // (args.passthru or {});
       });
 
-  buildYarnPackage = import ./buildYarnPackage.nix {
-    inherit lib npmInfo runCommand fetchurl npmModules writeScriptBin nodejs
-      yarn patchShebangs writeText stdenv untarAndWrap depToFetch commonEnv
-      makeWrapper writeShellScriptBin unScope;
-  };
+  inherit (yarnFunctions) buildYarnPackageSrc buildYarnPackage;
 }

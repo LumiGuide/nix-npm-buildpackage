@@ -42,65 +42,98 @@ let
   '';
 
   yarnCmd = "${yarnWrapper}/bin/yarn";
-in args@{ src, yarnBuild ? "yarn", yarnBuildMore ? "", integreties ? { }
-        , packageOverrides ? [ ], buildInputs ? [ ], yarnFlags ? [ ],
-          subdir ? null
-, ... }:
-let
-  deps = { dependencies = builtins.fromJSON (builtins.readFile yarnJson); };
-  yarnIntFile = writeText "integreties.json" (builtins.toJSON integreties);
-  yarnJson = runCommand "yarn.json" { } ''
-    set -e
-    mkdir -p node_modules/@yarnpkg/lockfile
-    tar -C $_ --strip-components=1 -xf ${yarnpkg-lockfile}
-    addToSearchPath NODE_PATH $PWD/node_modules         # @yarnpkg/lockfile
-    addToSearchPath NODE_PATH ${npmModules}             # ssri
-    ${nodejs}/bin/node ${./mkyarnjson.js} ${src + "/yarn.lock"} ${yarnIntFile} > $out
-  '';
-  pkgDir = if subdir != null then src + "/" + subdir else src;
-in stdenv.mkDerivation (rec {
-  inherit (npmInfo pkgDir) pname version;
+in rec {
+  buildYarnPackageSrc =
+    args@{ src
+         , integreties ? { }
+         , packageOverrides ? [ ]
+         , buildInputs ? [ ]
+         , yarnFlags ? [ ]
+         , ...
+         }:
+    let
+      deps = { dependencies = builtins.fromJSON (builtins.readFile yarnJson); };
+      yarnIntFile = writeText "integreties.json" (builtins.toJSON integreties);
+      yarnJson = runCommand "yarn.json" { } ''
+        set -e
+        mkdir -p node_modules/@yarnpkg/lockfile
+        tar -C $_ --strip-components=1 -xf ${yarnpkg-lockfile}
+        addToSearchPath NODE_PATH $PWD/node_modules         # @yarnpkg/lockfile
+        addToSearchPath NODE_PATH ${npmModules}             # ssri
+        ${nodejs}/bin/node ${./mkyarnjson.js} ${src + "/yarn.lock"} ${yarnIntFile} > $out
+      '';
+    in stdenv.mkDerivation ({
+      preBuildPhases = [ "yarnConfigPhase" "yarnCachePhase" ];
 
-  preBuildPhases = [ "yarnConfigPhase" "yarnCachePhase" ];
-  preInstallPhases = [ "yarnPackPhase" ];
-  outFile = unScope "${pname}-${version}";
+      # TODO
+      yarnConfigPhase = ''
+        cat <<-END >> .yarnrc
+            yarn-offline-mirror "$PWD/yarn-cache"
+            nodedir "${nodejs}"
+        END
+      '';
 
-  # TODO
-  yarnConfigPhase = ''
-    cat <<-END >> .yarnrc
-    	yarn-offline-mirror "$PWD/yarn-cache"
-    	nodedir "${nodejs}"
-    END
-  '';
+      yarnCachePhase = ''
+        mkdir -p yarn-cache
+        node ${./mkyarncache.js} ${yarnCacheInput "yarn-cache-input.json" deps packageOverrides}
+      '';
 
-  yarnCachePhase = ''
-    mkdir -p yarn-cache
-    node ${./mkyarncache.js} ${yarnCacheInput "yarn-cache-input.json" deps packageOverrides}
-  '';
+      installPhase = ''
+        cp -R . $out/
+      '';
+    } // commonEnv // removeAttrs args [ "integreties" "packageOverrides" ] // {
+      buildInputs = [ nodejs makeWrapper yarnWrapper ] ++ buildInputs;
+      yarnFlags = [ "--offline" "--frozen-lockfile" "--non-interactive" ] ++ yarnFlags;
+    });
 
-  buildPhase = ''
-    runHook preBuild
+  buildYarnPackage =
+    args@{ src
+         , yarnBuild ? "yarn"
+         , yarnBuildMore ? ""
+         , buildInputs ? [ ]
+         , yarnFlags ? [ ]
+         , subdir ? null
+         , ...
+         }:
+    let
+      pkgDir = if subdir != null then src + "/" + subdir else src;
 
-    patchShebangs .
-    yarn() { command yarn $yarnFlags "$@"; }
-    export SOURCE_DIR="$PWD"
-    ${if subdir != null then "cd ${subdir}" else ""}
-    ${yarnBuild}
-    ${yarnBuildMore}
-    runHook postBuild
-  '';
+      workspaceSrc = buildYarnPackageSrc {
+        inherit src;
+        name = "src"; # must be independent of subdir
+      };
+    in stdenv.mkDerivation (rec {
+      inherit (npmInfo pkgDir) pname version;
 
-  # TODO: install --production?
-  yarnPackPhase = ''
-    yarn pack --ignore-scripts --filename "${outFile}.tgz"
-  '';
+      src = workspaceSrc;
 
-  installPhase = ''
-    runHook preInstall
-    ${untarAndWrap "${outFile}" [ "${yarn}/bin/yarn" ]}
-    runHook postInstall
-  '';
-} // commonEnv // removeAttrs args [ "integreties" "packageOverrides" ] // {
-  buildInputs = [ nodejs makeWrapper yarnWrapper ] ++ buildInputs;
-  yarnFlags = [ "--offline" "--frozen-lockfile" "--non-interactive" ] ++ yarnFlags;
-})
+      preInstallPhases = [ "yarnPackPhase" ];
+      outFile = unScope "${pname}-${version}";
+
+      buildPhase = ''
+        runHook preBuild
+
+        patchShebangs .
+        yarn() { command yarn $yarnFlags "$@"; }
+        export SOURCE_DIR="$PWD"
+        ${if subdir != null then "cd ${subdir}" else ""}
+        ${yarnBuild}
+        ${yarnBuildMore}
+        runHook postBuild
+      '';
+
+      # TODO: install --production?
+      yarnPackPhase = ''
+        yarn pack --ignore-scripts --filename "${outFile}.tgz"
+      '';
+
+      installPhase = ''
+        runHook preInstall
+        ${untarAndWrap "${outFile}" [ "${yarn}/bin/yarn" ]}
+        runHook postInstall
+      '';
+    } // commonEnv // removeAttrs args [ "integreties" "packageOverrides" "src" ] // {
+      buildInputs = [ nodejs makeWrapper yarnWrapper ] ++ buildInputs;
+      yarnFlags = [ "--offline" "--frozen-lockfile" "--non-interactive" ] ++ yarnFlags;
+    });
+}
